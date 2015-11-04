@@ -85,6 +85,26 @@ void add_pid_to_list(pid_list_t plist, pid_t pid_to_add){
 	plist->size++;
 }
 
+void remove_pid_from_list(pid_list_t plist, pid_t pid_to_remove){
+	list_node_t prev = NULL;
+	list_node_t curr = plist->head;
+	while(curr){
+		if(curr->pid == pid_to_remove){
+			if(prev == NULL){//first element match
+				plist->head = curr->next;
+			}
+			else{//not first element match
+				prev->next = curr->next;
+			}
+			kfree(curr);
+			return;	
+		}
+		prev = curr;
+		curr = curr->next;
+	}
+	eprintk("Attempted to remove pid not in list");
+}
+
 int find_pid_in_list(pid_list_t plist, pid_t pid_to_find){
 	//1 is true i.e. while(1) is while(true)
 	//0 is false 
@@ -97,6 +117,7 @@ int find_pid_in_list(pid_list_t plist, pid_t pid_to_find){
 		while(iter){
 			if(iter->pid == pid_to_find)
 				return 1;
+			iter = iter->next;
 		}
 	}
 	return 0;
@@ -127,8 +148,8 @@ typedef struct osprd_info {
 	unsigned write_lock_count;
 	unsigned read_lock_count;
 	
-	unsigned* write_lock_pids;
-	unsigned* read_lock_pids;
+	pid_list_t write_lock_pids;
+	pid_list_t read_lock_pids;
 	unsigned* invalid_tickets;
 
 	/* HINT: You may want to add additional fields to help
@@ -417,6 +438,8 @@ static void osprd_setup(osprd_info_t *d)
 	//OUR SETUP CODE
 	d->write_lock_count = 0;
 	d->read_lock_count = 0;
+	d->write_lock_pids = create_pid_list();
+	d->read_lock_pids = create_pid_list();
 	
 }
 
