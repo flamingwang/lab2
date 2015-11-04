@@ -34,7 +34,7 @@
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_DESCRIPTION("CS 111 RAM Disk");
 // EXERCISE: Pass your names into the kernel as the module's authors.
-MODULE_AUTHOR("Dennis Sean");
+MODULE_AUTHOR("Dennis Gahm and Sean Wang");
 
 #define OSPRD_MAJOR	222
 
@@ -43,6 +43,65 @@ MODULE_AUTHOR("Dennis Sean");
  * as an argument to insmod: "insmod osprd.ko nsectors=4096" */
 static int nsectors = 32;
 module_param(nsectors, int, 0);
+
+
+//OUR LIST STRUCTURE
+struct list_node{
+	pid_t pid;
+	struct list_node* next;
+};
+typedef struct list_node* list_node_t;
+
+struct pid_list{
+	list_node_t head;
+	list_node_t curr;
+	unsigned size;
+};
+typedef struct pid_list* pid_list_t;
+	
+pid_list_t create_pid_list(void){
+	pid_list_t plist = (pid_list_t) kmalloc(sizeof(struct pid_list), GFP_ATOMIC);
+	
+	plist->head = NULL;
+	plist->curr = NULL;
+	plist->size = 0;
+	return plist;
+}
+
+void add_pid_to_list(pid_list_t plist, pid_t pid_to_add){
+	if(plist->head == NULL){
+		plist->curr = (list_node_t) kmalloc(sizeof(struct list_node), GFP_ATOMIC);
+		plist->curr->pid = pid_to_add;
+		plist->curr->next = NULL;
+		plist->head = plist->curr;
+	}
+	else{
+		plist->curr->next = (list_node_t) kmalloc(sizeof(struct list_node), GFP_ATOMIC);
+		plist->curr = plist->curr->next;
+		plist->curr->pid = pid_to_add;
+		plist->curr->next = NULL;
+	}
+
+	plist->size++;
+}
+
+int find_pid_in_list(pid_list_t plist, pid_t pid_to_find){
+	//1 is true i.e. while(1) is while(true)
+	//0 is false 
+	if(plist->head == NULL && plist->curr == NULL){
+		eprintk("Empty List");
+		return 0;
+	}
+	else{
+		list_node_t iter = plist->head;
+		while(iter){
+			if(iter->pid == pid_to_find)
+				return 1;
+		}
+	}
+	return 0;
+}
+
 
 
 /* The internal representation of our device. */
@@ -63,7 +122,7 @@ typedef struct osprd_info {
 					// the device lock
 
 
-	//Possible Fields to add
+	//OUR FIELDS
 	
 	unsigned write_lock_count;
 	unsigned read_lock_count;
@@ -353,6 +412,11 @@ static void osprd_setup(osprd_info_t *d)
 	osp_spin_lock_init(&d->mutex);
 	d->ticket_head = d->ticket_tail = 0;
 	/* Add code here if you add fields to osprd_info_t. */
+
+
+	//OUR SETUP CODE
+	d->write_lock_count = 0;
+	d->read_lock_count = 0;
 	
 }
 
