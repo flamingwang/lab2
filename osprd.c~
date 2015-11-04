@@ -125,7 +125,7 @@ int find_pid_in_list(pid_list_t plist, pid_t pid_to_find){
 }
 
 
-//OUR Ticket List Structure (literally just Pid list with the word 'pid' -> 'ticket')
+//OUR Ticket List Data Structure (literally just Pid list with the word 'pid' -> 'ticket')
 struct ticket_node{
 	unsigned ticket;
 	struct ticket_node* next;
