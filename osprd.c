@@ -204,6 +204,21 @@ int find_ticket_in_list(ticket_list_t tlist, unsigned ticket_to_find){
 	return 0;
 }
 
+//more ticket functions
+unsigned return_valid_ticket(ticket_list_t invalid_tickets, unsigned ticket_tail_pp){
+  //check if ticket_tail is in invalid_tickets
+  //	if it is
+  //		assign smallest ticket that is not invalid
+  if(find_ticket_in_list(invalid_tickets,ticket_tail_pp)){
+    unsigned temp = ticket_tail_pp++;
+    while(find_ticket_in_list(invalid_tickets,temp)){
+      temp++;
+    }
+    return temp;
+  }
+  return ticket_tail_pp;
+}
+
 
 /* The internal representation of our device. */
 typedef struct osprd_info {
@@ -362,7 +377,8 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
 			  remove_pid_from_list(d->read_lock_pids, current->pid);
 			}
 			
-			d->ticket_tail++; //give the next in line its chance now
+			//d->ticket_tail++; //give the next in line its chance now
+			//ticket tail incremented in call to return valid ticket
 
 			osp_spin_unlock(&(d->mutex));
 
@@ -471,10 +487,29 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		if(filp_writable){
 
 			//Sleep until no read/write locks and d->ticket_tail == local_ticket
-			r = wait_event_interruptible(d->blockq,
+			if(wait_event_interruptible(d->blockq,
 				d->ticket_tail == my_ticket &&
 				d->write_lock_count == 0 &&
-				d->read_lock_count == 0);
+				d->read_lock_count == 0))
+			{
+			  //Something wrong happened in sleep
+			  if(d->ticket_tail == my_ticket){
+			    d->ticket_tail = return_valid_ticket(d->invalid_tickets, d->ticket_tail++);
+			    wake_up_all(&(d->blockq));
+			  }
+			  else{
+			    add_ticket_to_list(d->invalid_tickets, my_ticket);
+			    return -ERESTARTSYS;
+			  }
+			}
+			else{//Sleep succeeded
+			  osp_spin_lock(&(d->mutex));
+			  filp->f_flags |= F_OSPRD_LOCKED;
+			  add_pid_to_list(d->write_lock_pids, current->pid);
+			  osp_spin_unlock(&(d->mutex));
+			  d->ticket_tail = return_valid_ticket(d->invalid_tickets,d->ticket_tail++);
+			  return 0;
+			}
 			
 		}
 
