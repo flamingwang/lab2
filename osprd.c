@@ -110,7 +110,7 @@ int find_pid_in_list(pid_list_t plist, pid_t pid_to_find){
 	//1 is true i.e. while(1) is while(true)
 	//0 is false 
 	if(plist->head == NULL && plist->curr == NULL){
-		eprintk("Empty List");
+		eprintk("Empty pid List");
 		return 0;
 	}
 	else{
@@ -183,14 +183,14 @@ void remove_ticket_from_list(ticket_list_t tlist, unsigned ticket_to_remove){
 		prev = curr;
 		curr = curr->next;
 	}
-	eprintk("Attempted to remove pid not in list");
+	eprintk("Attempted to remove ticket not in list");
 }
 
 int find_ticket_in_list(ticket_list_t tlist, unsigned ticket_to_find){
 	//1 is true i.e. while(1) is while(true)
 	//0 is false 
 	if(tlist->head == NULL && tlist->curr == NULL){
-		eprintk("Empty List");
+		eprintk("Empty ticket List");
 		return 0;
 	}
 	else{
@@ -506,8 +506,8 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			  osp_spin_lock(&(d->mutex));
 			  filp->f_flags |= F_OSPRD_LOCKED;
 			  add_pid_to_list(d->write_lock_pids, current->pid);
-			  osp_spin_unlock(&(d->mutex));
 			  d->ticket_tail = return_valid_ticket(d->invalid_tickets,d->ticket_tail++);
+			  osp_spin_unlock(&(d->mutex));
 			  return 0;
 			}
 			
