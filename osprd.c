@@ -90,18 +90,20 @@ void remove_pid_from_list(pid_list_t plist, pid_t pid_to_remove){
 	list_node_t curr = plist->head;
 	while(curr){
 		if(curr->pid == pid_to_remove){
+			//eprintk("Removed pid %d\n", pid_to_remove);
 			if(prev == NULL){//first element match
 				plist->head = curr->next;
 			}
 			else{//not first element match
 				prev->next = curr->next;
 			}
+			plist->size--;
 			kfree(curr);
 			return;	
 		}
 		prev = curr;
 		curr = curr->next;
-		plist->size--;
+		
 	}
 	eprintk("Attempted to remove pid not in list");
 }
@@ -161,7 +163,7 @@ void add_ticket_to_list(ticket_list_t tlist, unsigned ticket_to_add){
 		tlist->curr->ticket = ticket_to_add;
 		tlist->curr->next = NULL;
 	}
-
+	eprintk("Added ticket %d\n", ticket_to_add);
 	tlist->size++;
 }
 
@@ -170,6 +172,7 @@ void remove_ticket_from_list(ticket_list_t tlist, unsigned ticket_to_remove){
 	ticket_node_t curr = tlist->head;
 	while(curr){
 		if(curr->ticket == ticket_to_remove){
+			//eprintk("Removed ticket %d\n", ticket_to_remove);
 			if(prev == NULL){//first element match
 				tlist->head = curr->next;
 			}
@@ -190,14 +193,14 @@ int find_ticket_in_list(ticket_list_t tlist, unsigned ticket_to_find){
 	//1 is true i.e. while(1) is while(true)
 	//0 is false 
 	if(tlist->head == NULL && tlist->curr == NULL){
-		eprintk("Empty ticket List");
+		//eprintk("Empty ticket List\n");
 		return 0;
 	}
 	else{
 		ticket_node_t iter = tlist->head;
 		while(iter){
 			if(iter->ticket == ticket_to_find)
-				return 1;
+			  return 1;
 			iter = iter->next;
 		}
 	}
@@ -210,6 +213,7 @@ unsigned return_valid_ticket(ticket_list_t invalid_tickets, unsigned ticket_tail
   //	if it is
   //		assign smallest ticket that is not invalid
   if(find_ticket_in_list(invalid_tickets,ticket_tail_pp)){
+	eprintk("ticket is invalid\n");
     unsigned temp = ticket_tail_pp++;
     while(find_ticket_in_list(invalid_tickets,temp)){
       temp++;
@@ -320,9 +324,9 @@ static void osprd_process_request(osprd_info_t *d, struct request *req)
 	if(rq_data_dir(req)==READ)
 	{
 		//memcpy(src, dst, size);
-		memcpy(ptr, req->buffer, req->current_nr_sectors * SECTOR_SIZE);
-	}else{//WRITE
 		memcpy(req->buffer, ptr, req->current_nr_sectors * SECTOR_SIZE);
+	}else{//WRITE
+		memcpy(ptr, req->buffer, req->current_nr_sectors * SECTOR_SIZE);
 	}
 	// END OF OUR CODE
 	
@@ -364,7 +368,7 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
 		// Your code here.
 		//OUR CODE
 		//Check if file is locked
-		int filp_locked = filp->f_flags & F_OSPRD_LOCKED;
+		int filp_locked = (filp->f_flags & F_OSPRD_LOCKED) != 0;
 		if(filp_locked){
 			//if locked release lock
 			osp_spin_lock(&(d->mutex));//CRITICAL SECTION
@@ -377,16 +381,14 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
 			  remove_pid_from_list(d->read_lock_pids, current->pid);
 			}
 			
-			//d->ticket_tail++; //give the next in line its chance now
-			//ticket tail incremented in call to return valid ticket
-
-			osp_spin_unlock(&(d->mutex));
 
 			//Mark file as unlocked
 			filp->f_flags &= ~F_OSPRD_LOCKED;
 
 			//wake up blocked processes
 			wake_up_all(&(d->blockq));
+			osp_spin_unlock(&(d->mutex));
+			return 0;
 		}
 		// END OF OUR CODE
 
@@ -472,10 +474,6 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 				
 		//OUR CODE
 
-		//NOTE: 
-		//ticket_tail is the NEXT ticket
-		//ticket_head is the ticket CURRENTLY being SERVED
-
 		//1. assign a ticket (Critical Section, protect with spinlock)
 		osp_spin_lock(&(d->mutex));//lock ramdisk
 		my_ticket = d->ticket_head;//set a local variable to d->ticket_head (just following instructions)
@@ -492,27 +490,64 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 				d->write_lock_count == 0 &&
 				d->read_lock_count == 0))
 			{
-			  //Something wrong happened in sleep
-			  if(d->ticket_tail == my_ticket){
-			    d->ticket_tail = return_valid_ticket(d->invalid_tickets, d->ticket_tail++);
+			  //Sleep was errored
+			  
+			  if(d->ticket_tail == my_ticket){//errored on my ticket, 
+			    //kill me, adjust ticket_tail, and wake up
+			    d->ticket_tail = return_valid_ticket(d->invalid_tickets, (d->ticket_tail)+1); 
 			    wake_up_all(&(d->blockq));
 			  }
-			  else{
+			  else{//invalidate a ticket, no need to adjust ticket_tail just yet
 			    add_ticket_to_list(d->invalid_tickets, my_ticket);
-			    return -ERESTARTSYS;
 			  }
+			  
+			  return -ERESTARTSYS;
 			}
 			else{//Sleep succeeded
+			  //lock file, update WRITE lock list and count, adjust ticket tail, DONT wake up
 			  osp_spin_lock(&(d->mutex));
 			  filp->f_flags |= F_OSPRD_LOCKED;
 			  add_pid_to_list(d->write_lock_pids, current->pid);
-			  d->ticket_tail = return_valid_ticket(d->invalid_tickets,d->ticket_tail++);
+			  d->write_lock_count++;
+			  d->ticket_tail = return_valid_ticket(d->invalid_tickets,(d->ticket_tail)+1);
 			  osp_spin_unlock(&(d->mutex));
 			  return 0;
 			}
 			
 		}
-
+		else{//if not open for writing, attempt to read
+		  if(wait_event_interruptible(d->blockq,
+			  d->ticket_tail == my_ticket &&
+			  d->write_lock_count == 0)){
+		    //Sleep was errored
+		    
+		    if(d->ticket_tail == my_ticket){//errored on my ticket 
+		      //kill me, adjust ticket_tail, wake up
+			eprintk("interrupt and ticket_tail == my_ticket\n");
+		      d->ticket_tail = return_valid_ticket(d->invalid_tickets, (d->ticket_tail)+1);
+		      wake_up_all(&(d->blockq));
+		    }
+		    else{//kill other ticket
+		      eprintk("interrupt and ticket_tail != my_ticket\n");
+		      add_ticket_to_list(d->invalid_tickets, my_ticket);
+		    }
+		    
+		    return -ERESTARTSYS;
+		  }
+		  else{//Sleep succeeded
+		    //lock file, update READ lock list and count, adjust ticket_tail, DO wake up
+		    osp_spin_lock(&(d->mutex));
+		    filp->f_flags |= F_OSPRD_LOCKED;
+		    add_pid_to_list(d->read_lock_pids, current->pid);
+		    d->read_lock_count++;
+		    d->ticket_tail = return_valid_ticket(d->invalid_tickets,(d->ticket_tail)+1);
+		    
+		    wake_up_all(&(d->blockq));//others can read during a read lock, they cannot write
+		    osp_spin_unlock(&(d->mutex));
+		    return 0;
+		  }
+		}
+		// END OF OUR CODE
 
 
 		eprintk("Attempting to acquire\n");
@@ -528,11 +563,45 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		// Otherwise, if we can grant the lock request, return 0.
 
 		// Your code here (instead of the next two lines).
+		
+		//OUR CODE
+		
+		//No ticket, either serve or say busy
+		if(filp_writable){//Attempt Write Lock
+		  if(d->write_lock_count == 0 && d->read_lock_count == 0){
+		    //WRITE LOCK
+		    osp_spin_lock(&(d->mutex));
+		    filp->f_flags |= F_OSPRD_LOCKED;
+		    add_pid_to_list(d->write_lock_pids, current->pid);
+		    d->write_lock_count++;
+		    osp_spin_unlock(&(d->mutex));
+		    return 0;
+		  }
+		  else{
+		    return -EBUSY;
+		  }
+		}
+		else{//Attempt Read Lock
+		  if(d->write_lock_count == 0){
+		    osp_spin_lock(&(d->mutex));
+		    filp->f_flags |= F_OSPRD_LOCKED;
+		    add_pid_to_list(d->read_lock_pids, current->pid);
+		    d->read_lock_count++;
+		    
+		    wake_up_all(&(d->blockq)); // others can read during a read lock, they cannot write
+		    osp_spin_unlock(&(d->mutex));
+		    return 0;
+		  }
+		  else{
+		    return -EBUSY;
+		  }
+		}
+		// END OF OUR CODE
+		
 		eprintk("Attempting to try acquire\n");
 		r = -ENOTTY;
 
 	} else if (cmd == OSPRDIOCRELEASE) {
-
 		// EXERCISE: Unlock the ramdisk.
 		//
 		// If the file hasn't locked the ramdisk, return -EINVAL.
@@ -541,6 +610,41 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		// you need, and return 0.
 
 		// Your code here (instead of the next line).
+		
+		
+		
+		//OUR CODE
+		int filp_locked = (filp->f_flags & F_OSPRD_LOCKED) != 0;
+		if(filp_locked){
+		  //clear lock, perform accounting, wake up wait queue, return 0;
+		  
+		  //accounting
+		  osp_spin_lock(&(d->mutex));
+		  if(filp_writable){
+		    d->write_lock_count--;
+		    remove_pid_from_list(d->write_lock_pids, current->pid);
+		  }
+		  else{
+		    d->read_lock_count--;
+		    remove_pid_from_list(d->read_lock_pids, current->pid);
+		  }
+		  
+		  
+		  //clear lock
+		  filp->f_flags &= ~F_OSPRD_LOCKED;
+		  
+		  //wake up wait queue
+		  wake_up_all(&(d->blockq));
+		  osp_spin_unlock(&(d->mutex));
+		  
+		  return 0;
+		}
+		else{
+		  return -EINVAL;
+		}
+		// END OF OUR CODE
+		
+		
 		r = -ENOTTY;
 
 	} else
@@ -556,7 +660,8 @@ static void osprd_setup(osprd_info_t *d)
 	/* Initialize the wait queue. */
 	init_waitqueue_head(&d->blockq);
 	osp_spin_lock_init(&d->mutex);
-	d->ticket_head = d->ticket_tail = 0;
+	d->ticket_head = 0;
+	d->ticket_tail = 0;
 	/* Add code here if you add fields to osprd_info_t. */
 
 
