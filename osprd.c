@@ -213,8 +213,7 @@ unsigned return_valid_ticket(ticket_list_t invalid_tickets, unsigned ticket_tail
   //	if it is
   //		assign smallest ticket that is not invalid
   if(find_ticket_in_list(invalid_tickets,ticket_tail_pp)){
-	eprintk("ticket is invalid\n");
-    unsigned temp = ticket_tail_pp++;
+    unsigned temp = ticket_tail_pp;
     while(find_ticket_in_list(invalid_tickets,temp)){
       temp++;
     }
@@ -474,12 +473,20 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 				
 		//OUR CODE
 
+		//If attempt to write lock twice => deadlock
+		//write lock count > 0, same pid attempting to lock twice
+		if(d->write_lock_count > 0 && filp_writable){
+			if(find_pid_in_list(d->write_lock_pids, current->pid)){
+				return -EDEADLK;
+			}
+		}
+
 		//1. assign a ticket (Critical Section, protect with spinlock)
 		osp_spin_lock(&(d->mutex));//lock ramdisk
 		my_ticket = d->ticket_head;//set a local variable to d->ticket_head (just following instructions)
+		//eprintk("Assigned ticket %d\n", my_ticket); 
 		d->ticket_head++; //then increment ticket head
 		osp_spin_unlock(&(d->mutex));//unlock spinlock
-
 
 		//2. If *filp open for writing, attempt to write-lock the ramdisk
 		if(filp_writable){
@@ -492,12 +499,14 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			{
 			  //Sleep was errored
 			  
-			  if(d->ticket_tail == my_ticket){//errored on my ticket, 
+			  if(d->ticket_tail == my_ticket){//errored on my ticket,
+			    eprintk("WRITE interrupt and ticket_tail == my_ticket\n"); 
 			    //kill me, adjust ticket_tail, and wake up
 			    d->ticket_tail = return_valid_ticket(d->invalid_tickets, (d->ticket_tail)+1); 
 			    wake_up_all(&(d->blockq));
 			  }
 			  else{//invalidate a ticket, no need to adjust ticket_tail just yet
+			    eprintk("WRITE interrupt and ticket_tail != my_ticket\n");
 			    add_ticket_to_list(d->invalid_tickets, my_ticket);
 			  }
 			  
@@ -523,12 +532,12 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		    
 		    if(d->ticket_tail == my_ticket){//errored on my ticket 
 		      //kill me, adjust ticket_tail, wake up
-			eprintk("interrupt and ticket_tail == my_ticket\n");
-		      d->ticket_tail = return_valid_ticket(d->invalid_tickets, (d->ticket_tail)+1);
+			eprintk("READ interrupt and ticket_tail == my_ticket\n");
+		        d->ticket_tail = return_valid_ticket(d->invalid_tickets, ++d->ticket_tail);
 		      wake_up_all(&(d->blockq));
 		    }
 		    else{//kill other ticket
-		      eprintk("interrupt and ticket_tail != my_ticket\n");
+		      eprintk("READ interrupt and ticket_tail != my_ticket\n");
 		      add_ticket_to_list(d->invalid_tickets, my_ticket);
 		    }
 		    
